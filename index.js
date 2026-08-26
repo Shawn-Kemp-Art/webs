@@ -112,6 +112,8 @@ function qParam(key) {
 var qdensity = R.random_int(1,10);
 if(qParam('d') !== null){qdensity = parseInt(qParam('d'))}; //density
 qdensity = qdensity+3;
+var qcomplexity = R.random_int(1,10);
+if(qParam('cx') !== null){qcomplexity = parseInt(qParam('cx'))}; //complexity (how many webs)
 var qvariation = 10;
 if(qParam('v') !== null){qvariation = parseInt(qParam('v'))}; //cell size variation
 var qdepthvariation = false;
@@ -119,7 +121,7 @@ if(qParam('dv') !== null){
     var _dv = qParam('dv').toLowerCase();
     qdepthvariation = (_dv === '1' || _dv === 'true' || _dv === 'on' || _dv === 'yes');
 }; //depth variation (boolean)
-var qstyle = R.random_choice(["Full","Towers","Split"]);
+var qstyle = R.random_choice(["Natural","Natural","Natural","Orb","Corner","Edge"]);
 if(qParam('st') !== null){qstyle = qParam('st')}; //style
 
 var qorientation =R.random_int(1,2) < 2 ? "portrait" : "landscape";
@@ -212,8 +214,19 @@ definitions = [
         },
     },
     {
+        id: "complexity",
+        name: "Complexity",
+        type: "number",
+        default: qcomplexity,
+        options: {
+            min: 1,
+            max: 10,
+            step: 1,
+        },
+    },
+    {
         id: "variation",
-        name: "Cell size variation",
+        name: "Web irregularity",
         type: "number",
         default: qvariation,
         options: {
@@ -233,7 +246,7 @@ definitions = [
         name: "Style",
         type: "select",
         default: qstyle,
-        options: {options: ["Full","Towers","Split"]},
+        options: {options: ["Natural","Orb","Corner","Edge"]},
     },
     {
         id: "matwidth",
@@ -329,16 +342,13 @@ sheet = []; //This will hold each layer
 var px=0;var py=0;var pz=0;var prange=.1; 
 
 
-//define the Delaunay triangulation (deterministic via $fx.rand)
+//define the spider webs (deterministic via $fx.rand)
         var drawareawide = wide-framewidth*2;
         var drawareahigh = high-framewidth*2;
         var densityParam = qParam('d') !== null ? parseInt(qParam('d')) : $fx.getParam('density'); // 3..13
-        var avgCellSize = drawareawide / densityParam;
-        var avgCellArea = avgCellSize * avgCellSize;
-        // A Delaunay triangulation over N interior points produces ~2N triangles,
-        // so halve the site count to hit roughly the same on-screen cell count.
-        var numSites = Math.max(8, Math.floor((drawareawide * drawareahigh) / avgCellArea * 0.5));
 
+        // The webs live inside the frame opening — the anchor threads run all
+        // the way out to this boundary, so every web hangs off the frame.
         var bbox = {
             minX: framewidth,
             minY: framewidth,
@@ -348,59 +358,16 @@ var px=0;var py=0;var pz=0;var prange=.1;
 
         var cellGap = minOffset * R.random_num(1, 2);
 
-        // Sutherland-Hodgman half-plane clip. Used during Lloyd's relaxation to
-        // build Voronoi cells (the relaxation dual) — the final output is Delaunay.
-        function clipHalfPlane(poly, mx, my, dx, dy) {
-            var out = [];
-            var n = poly.length;
-            if (n < 3) return out;
-            for (var i = 0; i < n; i++) {
-                var s = poly[i];
-                var e = poly[(i + 1) % n];
-                var sd = (s.x - mx) * dx + (s.y - my) * dy;
-                var ed = (e.x - mx) * dx + (e.y - my) * dy;
-                var sIn = sd <= 0;
-                var eIn = ed <= 0;
-                if (sIn) {
-                    if (eIn) {
-                        out.push(e);
-                    } else {
-                        var t = sd / (sd - ed);
-                        out.push({x: s.x + (e.x - s.x) * t, y: s.y + (e.y - s.y) * t});
-                    }
-                } else if (eIn) {
-                    var t = sd / (sd - ed);
-                    out.push({x: s.x + (e.x - s.x) * t, y: s.y + (e.y - s.y) * t});
-                    out.push(e);
-                }
+        //vvvvvvvvvvvvvvv POLYGON HELPERS vvvvvvvvvvvvvvv
+        function polygonSignedArea(poly) {
+            var a = 0;
+            for (var i = 0; i < poly.length; i++) {
+                var p = poly[i], q = poly[(i+1) % poly.length];
+                a += p.x * q.y - q.x * p.y;
             }
-            return out;
+            return a * 0.5;
         }
-
-        // Voronoi cell of site idx, clipped to the given starting region
-        // (defaults to the full drawing bbox). Relaxation-only.
-        function computeVoronoiCell(idx, siteList, startRegion) {
-            var cell = startRegion ? startRegion.slice() : [
-                {x: bbox.minX, y: bbox.minY},
-                {x: bbox.maxX, y: bbox.minY},
-                {x: bbox.maxX, y: bbox.maxY},
-                {x: bbox.minX, y: bbox.maxY}
-            ];
-            var s = siteList[idx];
-            for (var i = 0; i < siteList.length; i++) {
-                if (i === idx) continue;
-                var p = siteList[i];
-                var dx = p.x - s.x;
-                var dy = p.y - s.y;
-                var d2 = dx*dx + dy*dy;
-                if (d2 < 1e-9) continue;
-                var mx = (s.x + p.x) * 0.5;
-                var my = (s.y + p.y) * 0.5;
-                cell = clipHalfPlane(cell, mx, my, dx, dy);
-                if (cell.length < 3) return null;
-            }
-            return cell;
-        }
+        function polygonArea(poly) { return Math.abs(polygonSignedArea(poly)); }
 
         function polygonCentroid(poly) {
             var cx = 0, cy = 0, area = 0;
@@ -414,6 +381,29 @@ var px=0;var py=0;var pz=0;var prange=.1;
             area *= 0.5;
             if (Math.abs(area) < 1e-6) return null;
             return {x: cx / (6 * area), y: cy / (6 * area)};
+        }
+
+        // offsetPolygonClipper shrinks assuming positive signed area (the same
+        // convention the triangulation this was forked from used).
+        function ensurePositiveWinding(poly) {
+            return polygonSignedArea(poly) >= 0 ? poly : poly.slice().reverse();
+        }
+
+        // Drop consecutive duplicates — spiral polylines meet radial endpoints
+        // exactly, and Clipper dislikes zero-length edges.
+        function dedupePolygon(poly) {
+            var out = [];
+            for (var i = 0; i < poly.length; i++) {
+                var p = poly[i];
+                var q = out.length ? out[out.length-1] : null;
+                if (q && Math.abs(p.x-q.x) < 1e-6 && Math.abs(p.y-q.y) < 1e-6) continue;
+                out.push(p);
+            }
+            while (out.length > 1) {
+                var f = out[0], l = out[out.length-1];
+                if (Math.abs(f.x-l.x) < 1e-6 && Math.abs(f.y-l.y) < 1e-6) out.pop(); else break;
+            }
+            return out;
         }
 
         // Inward polygon offset via Clipper (returns largest resulting piece, or null).
@@ -442,351 +432,54 @@ var px=0;var py=0;var pz=0;var prange=.1;
             return out;
         }
 
-        // Circumcircle of triangle (a,b,c) used by Bowyer-Watson.
-        function circumcircle(a, b, c) {
-            var ax = a.x, ay = a.y, bx = b.x, by = b.y, cx = c.x, cy = c.y;
-            var d = 2 * (ax * (by - cy) + bx * (cy - ay) + cx * (ay - by));
-            if (Math.abs(d) < 1e-12) return null;
-            var ax2 = ax*ax + ay*ay, bx2 = bx*bx + by*by, cx2 = cx*cx + cy*cy;
-            var ux = (ax2 * (by - cy) + bx2 * (cy - ay) + cx2 * (ay - by)) / d;
-            var uy = (ax2 * (cx - bx) + bx2 * (ax - cx) + cx2 * (bx - ax)) / d;
-            var rdx = ux - ax, rdy = uy - ay;
-            return { x: ux, y: uy, r2: rdx*rdx + rdy*rdy };
-        }
-
-        // Bowyer-Watson Delaunay triangulation. Returns [i,j,k] index triples into points.
-        function delaunayTriangulate(points) {
-            var minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-            for (var i = 0; i < points.length; i++) {
-                if (points[i].x < minX) minX = points[i].x;
-                if (points[i].y < minY) minY = points[i].y;
-                if (points[i].x > maxX) maxX = points[i].x;
-                if (points[i].y > maxY) maxY = points[i].y;
-            }
-            var rdx = maxX - minX, rdy = maxY - minY;
-            var delta = Math.max(rdx, rdy) * 20 + 1;
-            var midx = (minX + maxX) / 2, midy = (minY + maxY) / 2;
-            var superA = { x: midx - delta, y: midy - delta };
-            var superB = { x: midx + delta, y: midy - delta };
-            var superC = { x: midx, y: midy + delta };
-            var superStart = points.length;
-            var verts = points.slice();
-            verts.push(superA, superB, superC);
-
-            var tris = [];
-            tris.push({ a: superStart, b: superStart + 1, c: superStart + 2,
-                        circ: circumcircle(superA, superB, superC) });
-
-            for (var pi = 0; pi < points.length; pi++) {
-                var p = points[pi];
-                var edges = [];
-                var kept = [];
-                for (var ti = 0; ti < tris.length; ti++) {
-                    var tri = tris[ti];
-                    var cc = tri.circ;
-                    if (!cc) { kept.push(tri); continue; }
-                    var dxp = p.x - cc.x, dyp = p.y - cc.y;
-                    if (dxp*dxp + dyp*dyp < cc.r2 - 1e-9) {
-                        edges.push([tri.a, tri.b]);
-                        edges.push([tri.b, tri.c]);
-                        edges.push([tri.c, tri.a]);
-                    } else {
-                        kept.push(tri);
-                    }
-                }
-                tris = kept;
-
-                // Boundary edges of the polygonal hole = edges that appear exactly once.
-                var counts = {};
-                for (var ei = 0; ei < edges.length; ei++) {
-                    var e = edges[ei];
-                    var key = Math.min(e[0], e[1]) + '_' + Math.max(e[0], e[1]);
-                    counts[key] = (counts[key] || 0) + 1;
-                }
-                for (var ei = 0; ei < edges.length; ei++) {
-                    var e = edges[ei];
-                    var key = Math.min(e[0], e[1]) + '_' + Math.max(e[0], e[1]);
-                    if (counts[key] !== 1) continue;
-                    var va = verts[e[0]], vb = verts[e[1]];
-                    tris.push({ a: e[0], b: e[1], c: pi,
-                                circ: circumcircle(va, vb, p) });
-                }
-            }
-
-            var out = [];
-            for (var ti = 0; ti < tris.length; ti++) {
-                var tri = tris[ti];
-                if (tri.a >= superStart || tri.b >= superStart || tri.c >= superStart) continue;
-                out.push([tri.a, tri.b, tri.c]);
-            }
-            return out;
-        }
-
-        // --- Region helpers: each style produces a list of convex region polygons
-        //     inside which one independent Delaunay triangulation will be built.
-        function polygonSignedArea(poly) {
-            var a = 0;
+        function polyBounds(poly) {
+            var b = {minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity};
             for (var i = 0; i < poly.length; i++) {
-                var p = poly[i], q = poly[(i+1) % poly.length];
-                a += p.x * q.y - q.x * p.y;
+                if (poly[i].x < b.minX) b.minX = poly[i].x;
+                if (poly[i].y < b.minY) b.minY = poly[i].y;
+                if (poly[i].x > b.maxX) b.maxX = poly[i].x;
+                if (poly[i].y > b.maxY) b.maxY = poly[i].y;
             }
-            return a * 0.5;
+            b.w = b.maxX - b.minX; b.h = b.maxY - b.minY;
+            return b;
         }
-        function polygonArea(poly) { return Math.abs(polygonSignedArea(poly)); }
-        function polygonBBox(poly) {
-            var nX = Infinity, nY = Infinity, xX = -Infinity, xY = -Infinity;
-            for (var i = 0; i < poly.length; i++) {
-                if (poly[i].x < nX) nX = poly[i].x;
-                if (poly[i].y < nY) nY = poly[i].y;
-                if (poly[i].x > xX) xX = poly[i].x;
-                if (poly[i].y > xY) xY = poly[i].y;
-            }
-            return {minX: nX, minY: nY, maxX: xX, maxY: xY};
-        }
-        function pointInConvexPolygon(pt, poly) {
-            // Assumes CCW winding.
+
+        // Distance from `origin` to the boundary of convex polygon `poly` along
+        // `angle`. This is what pins the web to its frame: a radial's full
+        // reach is exactly the distance to the region edge.
+        function rayReachInPolygon(origin, angle, poly) {
+            var dx = Math.cos(angle), dy = Math.sin(angle);
+            var best = Infinity;
             for (var i = 0; i < poly.length; i++) {
                 var a = poly[i], b = poly[(i+1) % poly.length];
-                var cross = (b.x - a.x) * (pt.y - a.y) - (b.y - a.y) * (pt.x - a.x);
-                if (cross < 0) return false;
+                var ex = b.x - a.x, ey = b.y - a.y;
+                var den = dx * ey - dy * ex;
+                if (Math.abs(den) < 1e-12) continue; // parallel
+                var wx = a.x - origin.x, wy = a.y - origin.y;
+                var t = (wx * ey - wy * ex) / den;
+                if (t <= 1e-6) continue;
+                var e2 = ex*ex + ey*ey;
+                if (e2 < 1e-12) continue;
+                var s = ((t * dx - wx) * ex + (t * dy - wy) * ey) / e2;
+                if (s < -1e-6 || s > 1 + 1e-6) continue;
+                if (t < best) best = t;
             }
-            return true;
+            return best === Infinity ? 0 : best;
         }
-        // Clip convex poly against convex region by successive half-plane clips.
-        function clipPolygonToConvex(poly, region) {
-            var clipped = poly;
-            for (var i = 0; i < region.length; i++) {
-                var a = region[i], b = region[(i+1) % region.length];
-                var dxE = b.x - a.x, dyE = b.y - a.y;
-                // CCW region: inside is to the left of each edge. clipHalfPlane
-                // keeps (p-m).d <= 0, so pass the right-pointing normal (dy, -dx).
-                clipped = clipHalfPlane(clipped, a.x, a.y, dyE, -dxE);
-                if (clipped.length < 3) return null;
-            }
-            return clipped;
-        }
-
-        // Inset every edge of a CCW convex polygon inward by `insetDist`.
-        // Edges between two lockVerts are treated specially: their inset is
-        // scaled by lockedScale (0 = fully flush; small positive = slight
-        // inset so the edge still participates in the organic hull outline).
-        function effectiveRegionFor(poly, lockVerts, insetDist, lockedScale) {
-            var lockedSet = {};
-            for (var li = 0; li < lockVerts.length; li++) lockedSet[lockVerts[li]] = true;
-            var lockedInset = insetDist * (lockedScale || 0);
-            var effective = poly.slice();
-            for (var i = 0; i < poly.length; i++) {
-                var v1 = i, v2 = (i + 1) % poly.length;
-                var edgeLocked = lockedSet[v1] && lockedSet[v2];
-                var useInset = edgeLocked ? lockedInset : insetDist;
-                if (useInset <= 0) continue;
-                var a = poly[v1], b = poly[v2];
-                var dxE = b.x - a.x, dyE = b.y - a.y;
-                var len = Math.hypot(dxE, dyE);
-                if (len < 1e-6) continue;
-                var nx = -dyE / len, ny = dxE / len;
-                var mx = a.x + nx * useInset;
-                var my = a.y + ny * useInset;
-                effective = clipHalfPlane(effective, mx, my, -nx, -ny);
-                if (effective.length < 3) return poly;
-            }
-            return effective;
-        }
-
-        // Places locked "hull anchor" sites along each edge at jittered
-        // tangent positions AND jittered inward offsets. The convex hull of
-        // the anchors forms an irregular polygon roughly insetDist inside the
-        // region — this keeps the triangulation outline organic (not a clean
-        // rectangle) while the average inset keeps canvas fill consistent.
-        //
-        // For edges where both endpoints are in lockVerts, the inset base is
-        // scaled by `lockedScale` (0 = anchors flush on the edge, small
-        // positive = anchors slightly inset so the edge still has organic
-        // variation). Corner lockVerts are always added flush.
-        function generateHullAnchors(poly, lockVerts, insetDist, anchorsPerEdge, lockedScale) {
-            var lockedSet = {};
-            for (var li = 0; li < lockVerts.length; li++) lockedSet[lockVerts[li]] = true;
-            var scale = (lockedScale || 0);
-            var anchors = [];
-            // Only pin lockVerts corners when the edge is hard-locked (scale=0).
-            // With soft locks, letting the corner float lets adjacent edge
-            // anchors form an organic cut-corner where two locked edges meet
-            // — otherwise the hull snaps to the exact corner point and looks
-            // rigid (a sharp + at the center of a 4-axis split).
-            if (scale === 0) {
-                for (var lv = 0; lv < lockVerts.length; lv++) {
-                    var vi = lockVerts[lv];
-                    anchors.push({x: poly[vi].x, y: poly[vi].y, locked: true});
-                }
-            }
-            for (var i = 0; i < poly.length; i++) {
-                var v1 = i, v2 = (i + 1) % poly.length;
-                var a = poly[v1], b = poly[v2];
-                var edgeLocked = (lockedSet[v1] && lockedSet[v2]);
-                var edgeBase = edgeLocked ? insetDist * scale : insetDist;
-                var dxE = b.x - a.x, dyE = b.y - a.y;
-                var len = Math.hypot(dxE, dyE);
-                if (len < 1e-6) continue;
-                var nx = -dyE / len, ny = dxE / len; // inward normal for CCW poly
-                for (var k = 0; k < anchorsPerEdge; k++) {
-                    var baseT = (k + 1) / (anchorsPerEdge + 1);
-                    // Keep jitter below the slot size so adjacent anchors on
-                    // the same edge can't swap or cluster into a sliver.
-                    var t = baseT + (R.random_dec() - 0.5) * 0.4 / (anchorsPerEdge + 1);
-                    t = Math.max(0.08, Math.min(0.92, t));
-                    var px = a.x + dxE * t;
-                    var py = a.y + dyE * t;
-                    // Inset jitter: 0.4x..1.4x of the edge's base inset.
-                    var insetPx = edgeBase * (0.4 + R.random_dec());
-                    anchors.push({
-                        x: px + nx * insetPx,
-                        y: py + ny * insetPx,
-                        locked: true
-                    });
-                }
-            }
-            return anchors;
-        }
-
-        // Larger gap so discrete regions read as separate elements; most of the
-        // visual breathing room now also comes from the organic convex hull
-        // (interior sites never reach region boundaries).
-        var regionGap = minOffset * 4;
-        function buildRegions(style) {
-            var bw = bbox.maxX - bbox.minX, bh = bbox.maxY - bbox.minY;
-            var cx = (bbox.minX + bbox.maxX) / 2;
-            var cy = (bbox.minY + bbox.maxY) / 2;
-            var regions = [];
-
-            function R_(poly, lockVerts, lockedScale) {
-                return {
-                    poly: poly,
-                    lockVerts: lockVerts || [],
-                    lockedScale: lockedScale || 0, // 0 = locked edges flush; >0 = subtle organic inset
-                };
-            }
-
-            if (style === 'Towers') {
-                var numTowers = R.random_int(2, 6);
-                // Pick an axis (horizontal = top/bottom edges; vertical = left/right).
-                // Sometimes all towers share one edge (uniform skyline); sometimes
-                // each tower independently picks either of the two opposite edges
-                // (mixed — stalactites and stalagmites).
-                var horiz = R.random_int(0, 1) === 0;
-                var edgeOpts = horiz ? ['bottom','top'] : ['left','right'];
-                var mixedAlign = R.random_int(0, 1) === 0; // 50% mixed, 50% uniform
-                var fixedAlign = R.random_choice(edgeOpts);
-                var slot = (horiz ? bw : bh) / numTowers;
-                var gap = regionGap * 0.5;
-                for (var i = 0; i < numTowers; i++) {
-                    var alignment = mixedAlign ? R.random_choice(edgeOpts) : fixedAlign;
-                    var extent = (horiz ? bh : bw);
-                    var len = extent * (0.35 + R.random_dec() * 0.65);
-                    if (horiz) {
-                        var x0 = bbox.minX + i * slot + gap;
-                        var x1 = bbox.minX + (i+1) * slot - gap;
-                        var y0, y1, lock;
-                        if (alignment === 'bottom') {
-                            y1 = bbox.maxY; y0 = y1 - len;
-                            lock = [2, 3]; // (x1,y1) and (x0,y1) — bottom edge flush
-                        } else {
-                            y0 = bbox.minY; y1 = y0 + len;
-                            lock = [0, 1]; // (x0,y0) and (x1,y0) — top edge flush
-                        }
-                        if (x1 - x0 < regionGap) continue;
-                        regions.push(R_([{x:x0,y:y0},{x:x1,y:y0},{x:x1,y:y1},{x:x0,y:y1}], lock));
-                    } else {
-                        var y0v = bbox.minY + i * slot + gap;
-                        var y1v = bbox.minY + (i+1) * slot - gap;
-                        var x0v, x1v, lockV;
-                        if (alignment === 'left') {
-                            x0v = bbox.minX; x1v = x0v + len;
-                            lockV = [0, 3]; // (x0v,y0v) and (x0v,y1v) — left edge flush
-                        } else {
-                            x1v = bbox.maxX; x0v = x1v - len;
-                            lockV = [1, 2]; // (x1v,y0v) and (x1v,y1v) — right edge flush
-                        }
-                        if (y1v - y0v < regionGap) continue;
-                        regions.push(R_([{x:x0v,y:y0v},{x:x1v,y:y0v},{x:x1v,y:y1v},{x:x0v,y:y1v}], lockV));
-                    }
-                }
-            } else if (style === 'Split') {
-                var splitCount = R.random_choice([2,4]);
-                var splitStyle = R.random_choice(['diagonal','axis']);
-                var g = regionGap * 0.5;
-
-                if (splitCount === 2 && splitStyle === 'diagonal') {
-                    var diag = R.random_int(0,1);
-                    if (diag === 0) { // TL-BR diagonal
-                        regions.push(R_([{x:bbox.minX+g,y:bbox.minY},{x:bbox.maxX,y:bbox.minY},{x:bbox.maxX,y:bbox.maxY-g}]));
-                        regions.push(R_([{x:bbox.minX,y:bbox.minY+g},{x:bbox.maxX-g,y:bbox.maxY},{x:bbox.minX,y:bbox.maxY}]));
-                    } else {          // TR-BL diagonal
-                        regions.push(R_([{x:bbox.minX,y:bbox.minY},{x:bbox.maxX-g,y:bbox.minY},{x:bbox.minX,y:bbox.maxY-g}]));
-                        regions.push(R_([{x:bbox.maxX,y:bbox.minY+g},{x:bbox.maxX,y:bbox.maxY},{x:bbox.minX+g,y:bbox.maxY}]));
-                    }
-                } else if (splitCount === 2) { // axis
-                    if (R.random_int(0,1) === 0) { // vertical split
-                        regions.push(R_([{x:bbox.minX,y:bbox.minY},{x:cx-g,y:bbox.minY},{x:cx-g,y:bbox.maxY},{x:bbox.minX,y:bbox.maxY}]));
-                        regions.push(R_([{x:cx+g,y:bbox.minY},{x:bbox.maxX,y:bbox.minY},{x:bbox.maxX,y:bbox.maxY},{x:cx+g,y:bbox.maxY}]));
-                    } else { // horizontal split
-                        regions.push(R_([{x:bbox.minX,y:bbox.minY},{x:bbox.maxX,y:bbox.minY},{x:bbox.maxX,y:cy-g},{x:bbox.minX,y:cy-g}]));
-                        regions.push(R_([{x:bbox.minX,y:cy+g},{x:bbox.maxX,y:cy+g},{x:bbox.maxX,y:bbox.maxY},{x:bbox.minX,y:bbox.maxY}]));
-                    }
-                } else if (splitCount === 4 && splitStyle === 'diagonal') {
-                    // X split — four triangles meeting near center, each pulled in by g.
-                    regions.push(R_([{x:bbox.minX,y:bbox.minY},{x:bbox.maxX,y:bbox.minY},{x:cx,y:cy-g}]));
-                    regions.push(R_([{x:bbox.maxX,y:bbox.minY},{x:bbox.maxX,y:bbox.maxY},{x:cx+g,y:cy}]));
-                    regions.push(R_([{x:bbox.maxX,y:bbox.maxY},{x:bbox.minX,y:bbox.maxY},{x:cx,y:cy+g}]));
-                    regions.push(R_([{x:bbox.minX,y:bbox.maxY},{x:bbox.minX,y:bbox.minY},{x:cx-g,y:cy}]));
-                } else {
-                    // Four axis-aligned quadrants. Center-facing edges lock
-                    // their endpoints and use a small lockedScale so their
-                    // anchors are only slightly inset — the quadrants stay
-                    // close to center, but the inner boundary is organic
-                    // rather than a perfectly straight +.
-                    var qScale = 0.3;
-                    regions.push(R_([{x:bbox.minX,y:bbox.minY},{x:cx-g,y:bbox.minY},{x:cx-g,y:cy-g},{x:bbox.minX,y:cy-g}], [1,2,3], qScale));
-                    regions.push(R_([{x:cx+g,y:bbox.minY},{x:bbox.maxX,y:bbox.minY},{x:bbox.maxX,y:cy-g},{x:cx+g,y:cy-g}], [0,2,3], qScale));
-                    regions.push(R_([{x:cx+g,y:cy+g},{x:bbox.maxX,y:cy+g},{x:bbox.maxX,y:bbox.maxY},{x:cx+g,y:bbox.maxY}], [0,1,3], qScale));
-                    regions.push(R_([{x:bbox.minX,y:cy+g},{x:cx-g,y:cy+g},{x:cx-g,y:bbox.maxY},{x:bbox.minX,y:bbox.maxY}], [0,1,2], qScale));
-                }
-            } else { // Full
-                regions.push(R_([
-                    {x:bbox.minX,y:bbox.minY},{x:bbox.maxX,y:bbox.minY},
-                    {x:bbox.maxX,y:bbox.maxY},{x:bbox.minX,y:bbox.maxY}
-                ]));
-            }
-
-            // Polys we construct are already CCW (verified), but re-winding the
-            // poly would invalidate lockVerts indices — so skip ensureCCW here.
-            return regions;
-        }
-
-        var styleParam = qParam('st') !== null ? qParam('st') : $fx.getParam('style');
-        var regions = buildRegions(styleParam);
-        console.log('Style: ' + styleParam + ' / regions: ' + regions.length);
-
-        var regionAreas = new Array(regions.length);
-        var totalRegionArea = 0;
-        for (var ri = 0; ri < regions.length; ri++) {
-            regionAreas[ri] = polygonArea(regions[ri].poly);
-            totalRegionArea += regionAreas[ri];
-        }
+        //^^^^^^^^^^^^^ END POLYGON HELPERS ^^^^^^^^^^^^^
 
         // Shared driver knobs.
         var variation = qParam('v') !== null ? parseInt(qParam('v')) : $fx.getParam('variation');
-        var variationT = (variation - 1) / 9;
-        var blend = 1.0 - variationT * 0.96;
-        var relaxIters = 4;
+        var variationT = (variation - 1) / 9; // 0 = a tidy web, 1 = a ragged one
 
         var depthVariation = qParam('dv') !== null ? qdepthvariation : $fx.getParam('depthvariation');
         var depthVarT = depthVariation ? 1 : 0; // boolean: full range vs uniform
-        var firstVoronoiLayer = stacks - 1; // every layer participates in the triangulation
-        var fullMaxDepth = firstVoronoiLayer;
+        var topWebLayer = stacks - 1; // every layer participates in the web
+        var fullMaxDepth = topWebLayer;
         // Full depth by default — cuts reach layer 1, only z=0 (the backing board)
-        // stays solid. depthVariation opens the range to [1, firstVoronoiLayer]
+        // stays solid. depthVariation opens the range to [1, topWebLayer]
         // so some cells cut all the way through and others are shallower.
-        var midDepth = firstVoronoiLayer;
+        var midDepth = topWebLayer;
         var halfRangeDown = (midDepth - 1) * depthVarT;
         var halfRangeUp = (fullMaxDepth - midDepth) * depthVarT;
         var minDepth = Math.max(1, Math.round(midDepth - halfRangeDown));
@@ -794,116 +487,520 @@ var px=0;var py=0;var pz=0;var prange=.1;
         if (maxDepth < minDepth) maxDepth = minDepth;
         console.log('Depth: dv=' + depthVariation + ' range=[' + minDepth + '..' + maxDepth + '] mid=' + midDepth);
 
+        //vvvvvvvvvvvvvvv WEB LAYOUT vvvvvvvvvvvvvvv
+        // A web is a hub plus a fan of radial threads that each run out to the
+        // boundary of its own region, crossed by sagging spiral threads. The
+        // faces of that subdivision are the cells the layer stack cuts into —
+        // so the material left standing between the cuts *is* the silk.
+        //
+        // Nothing here is regular on purpose: hubs sit off-centre, radials are
+        // unevenly spaced, spiral rings wobble, and only a handful of anchor
+        // threads make it all the way out to the frame.
+        var styleParam = qParam('st') !== null ? qParam('st') : $fx.getParam('style');
+
+        function rect(x0, y0, x1, y1) {
+            return [{x:x0,y:y0},{x:x1,y:y0},{x:x1,y:y1},{x:x0,y:y1}];
+        }
+
+        // Keep the side of `poly` where (p - m) . n <= 0. Convex in, convex out.
+        function clipHalfPlane(poly, mx, my, nx, ny) {
+            var out = [];
+            var n = poly.length;
+            if (n < 3) return out;
+            for (var i = 0; i < n; i++) {
+                var s = poly[i], e = poly[(i + 1) % n];
+                var sd = (s.x - mx) * nx + (s.y - my) * ny;
+                var ed = (e.x - mx) * nx + (e.y - my) * ny;
+                var sIn = sd <= 0, eIn = ed <= 0;
+                if (sIn) {
+                    if (eIn) out.push(e);
+                    else { var t = sd / (sd - ed); out.push({x: s.x + (e.x - s.x) * t, y: s.y + (e.y - s.y) * t}); }
+                } else if (eIn) {
+                    var t2 = sd / (sd - ed);
+                    out.push({x: s.x + (e.x - s.x) * t2, y: s.y + (e.y - s.y) * t2});
+                    out.push(e);
+                }
+            }
+            return out;
+        }
+
+        function pointInPolygon(pt, poly) {
+            var inside = false;
+            for (var i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+                var pi = poly[i], pj = poly[j];
+                if (((pi.y > pt.y) !== (pj.y > pt.y)) &&
+                    (pt.x < (pj.x - pi.x) * (pt.y - pi.y) / (pj.y - pi.y) + pi.x)) inside = !inside;
+            }
+            return inside;
+        }
+
+        // Is this point sitting on the frame opening (as opposed to on an
+        // interior split line)? Webs would rather anchor to the real frame.
+        function onFrame(p) {
+            return Math.abs(p.x - bbox.minX) < 1 || Math.abs(p.x - bbox.maxX) < 1 ||
+                   Math.abs(p.y - bbox.minY) < 1 || Math.abs(p.y - bbox.maxY) < 1;
+        }
+
+        // Cut the frame opening into `count` convex pockets, one web each.
+        // The cuts are at free angles rather than on a grid, so several webs
+        // sharing a frame read as a tangle of separate webs and not as tiles.
+        function splitRegions(region, count) {
+            var out = [region];
+            while (out.length < count) {
+                // Always split whatever pocket is largest.
+                var bi = 0, bArea = -1;
+                for (var i = 0; i < out.length; i++) {
+                    var a = polygonArea(out[i]);
+                    if (a > bArea) { bArea = a; bi = i; }
+                }
+                var poly = out[bi];
+                var b = polyBounds(poly);
+                var c = polygonCentroid(poly) || {x: (b.minX+b.maxX)/2, y: (b.minY+b.maxY)/2};
+                var gap = minOffset * 3;
+                var extent = Math.max(b.w, b.h);
+
+                var pieces = null;
+                for (var attempt = 0; attempt < 12 && !pieces; attempt++) {
+                    // Bias the cut toward the long axis so pockets stay chunky,
+                    // then let it wander well off square.
+                    var baseAng = (b.w >= b.h ? 0 : Math.PI / 2);
+                    var ang = baseAng + (R.random_dec() - 0.5) * 0.9;
+                    var nx = Math.cos(ang), ny = Math.sin(ang);
+                    // Off-centre so the two pockets come out different sizes.
+                    var off = (R.random_dec() - 0.5) * extent * 0.3;
+                    var mx = c.x + nx * off, my = c.y + ny * off;
+                    var A = clipHalfPlane(poly, mx + nx * gap, my + ny * gap, nx, ny);
+                    var B = clipHalfPlane(poly, mx - nx * gap, my - ny * gap, -nx, -ny);
+                    if (A.length >= 3 && B.length >= 3 &&
+                        polygonArea(A) > bArea * 0.25 && polygonArea(B) > bArea * 0.25) {
+                        pieces = [A, B];
+                    }
+                }
+                if (!pieces) break; // nothing splits cleanly — stop here
+                out.splice(bi, 1, pieces[0], pieces[1]);
+            }
+            return out;
+        }
+
+        // Given two directions out of `hub`, return the sweep that runs through
+        // the inside of `poly` (rather than the reflex way round the outside).
+        function interiorSweep(hub, aA, aB, poly) {
+            var d = aB - aA;
+            while (d <= 1e-9) d += Math.PI * 2;
+            while (d > Math.PI * 2) d -= Math.PI * 2;
+            var mid = aA + d / 2;
+            var probe = {x: hub.x + Math.cos(mid) * 2, y: hub.y + Math.sin(mid) * 2};
+            if (pointInPolygon(probe, poly)) return {start: aA, end: aA + d};
+            return {start: aB, end: aB + (Math.PI * 2 - d)};
+        }
+
+        // Build the web descriptors for a style. Each is {region, hub, closed}
+        // — `closed` webs wrap all the way around; open ones fan out from a hub
+        // sitting on the pocket's own boundary, ideally the frame itself.
+        function buildWebs(style, count) {
+            var full = rect(bbox.minX, bbox.minY, bbox.maxX, bbox.maxY);
+            var webs = [];
+            // A lone spider often bothers with only part of the frame; once
+            // several are sharing it they each fill their pocket.
+            var trimOdds = count === 1 ? 7 : (count <= 3 ? 5 : 2);
+
+            // Orb weavers hang above centre — bias the hub up and jitter it
+            // across, so the radials are never the same length twice.
+            function orbWeb(region) {
+                var b = polyBounds(region);
+                var hub, tries = 0;
+                do {
+                    hub = {
+                        x: b.minX + b.w * (0.5 + (R.random_dec() - 0.5) * 0.42),
+                        y: b.minY + b.h * (0.44 + (R.random_dec() - 0.5) * 0.46)
+                    };
+                    tries++;
+                } while (!pointInPolygon(hub, region) && tries < 20);
+                if (!pointInPolygon(hub, region)) {
+                    hub = polygonCentroid(region) || {x: (b.minX+b.maxX)/2, y: (b.minY+b.maxY)/2};
+                }
+                return {region: region, hub: hub, closed: true};
+            }
+
+            // Trim a pocket back to just the part near the hub, so an
+            // anchored web spans a chord of the frame instead of always
+            // reaching the far side. This is what leaves bare frame beside a
+            // corner web — the spider only bothered with its own corner.
+            function trimToward(region, hub, nx, ny, lo, hi) {
+                var maxD = 0;
+                for (var i = 0; i < region.length; i++) {
+                    var d = (region[i].x - hub.x) * nx + (region[i].y - hub.y) * ny;
+                    if (d > maxD) maxD = d;
+                }
+                if (maxD <= 0) return region;
+                var dist = maxD * (lo + R.random_dec() * (hi - lo));
+                var trimmed = clipHalfPlane(region, hub.x + nx * dist, hub.y + ny * dist, nx, ny);
+                if (trimmed.length < 3) return region;
+                if (polygonArea(trimmed) < polygonArea(region) * 0.12) return region;
+                return trimmed;
+            }
+
+            // Inward-pointing unit normal of region edge i.
+            function inwardNormal(region, i) {
+                var a = region[i], b = region[(i + 1) % region.length];
+                var dx = b.x - a.x, dy = b.y - a.y;
+                var L = Math.hypot(dx, dy);
+                if (L < 1e-6) return {x: 0, y: 0};
+                var nx = -dy / L, ny = dx / L;
+                var mid = {x: (a.x + b.x) / 2, y: (a.y + b.y) / 2};
+                if (!pointInPolygon({x: mid.x + nx * 2, y: mid.y + ny * 2}, region)) { nx = -nx; ny = -ny; }
+                return {x: nx, y: ny};
+            }
+
+            // Hub pinned on a corner of the pocket, fanning across that corner's
+            // interior angle — the two end radials lie along the pocket edges.
+            function cornerWeb(region) {
+                var n = region.length;
+                // A spider needs a real corner to bridge: skip slivers and
+                // near-straight vertices left behind by the pocket cuts.
+                function cornerOK(i) {
+                    var v0 = region[i];
+                    var p0 = region[(i - 1 + n) % n], n0 = region[(i + 1) % n];
+                    var s0 = interiorSweep(v0,
+                        Math.atan2(n0.y - v0.y, n0.x - v0.x),
+                        Math.atan2(p0.y - v0.y, p0.x - v0.x), region);
+                    var ang0 = s0.end - s0.start;
+                    return ang0 > 0.6 && ang0 < 2.6;
+                }
+                var pool = [];
+                for (var i = 0; i < n; i++) if (onFrame(region[i]) && cornerOK(i)) pool.push(i);
+                if (!pool.length) for (var i = 0; i < n; i++) if (cornerOK(i)) pool.push(i);
+                if (!pool.length) for (var i = 0; i < n; i++) pool.push(i);
+                var vi = pool[R.random_int(0, pool.length - 1)];
+                var v = region[vi];
+                var prev = region[(vi - 1 + n) % n], next = region[(vi + 1) % n];
+                var aPrev = Math.atan2(prev.y - v.y, prev.x - v.x);
+                var aNext = Math.atan2(next.y - v.y, next.x - v.x);
+                var hub = {x: v.x, y: v.y};
+                // Usually the spider only spans part of the pocket.
+                if (R.random_int(0, 9) < trimOdds) {
+                    var cen = polygonCentroid(region);
+                    if (cen) {
+                        var dx = cen.x - hub.x, dy = cen.y - hub.y;
+                        var L = Math.hypot(dx, dy);
+                        if (L > 1e-6) region = trimToward(region, hub, dx / L, dy / L, 0.55, 1.0);
+                    }
+                }
+                var sw = interiorSweep(hub, aNext, aPrev, region);
+                return {region: region, hub: hub, sweepStart: sw.start, sweepEnd: sw.end, closed: false};
+            }
+
+            // Hub out on an edge, fanning a half turn inward — the half-web
+            // that hangs off the top or the side of a frame.
+            function edgeWeb(region) {
+                var n = region.length;
+                var pool = [];
+                for (var i = 0; i < n; i++) {
+                    var a = region[i], b2 = region[(i + 1) % n];
+                    if (onFrame(a) && onFrame(b2) && onFrame({x: (a.x+b2.x)/2, y: (a.y+b2.y)/2})) pool.push(i);
+                }
+                if (!pool.length) {
+                    // No frame edge in this pocket — anchor on its longest edge.
+                    var bestI = 0, bestL = -1;
+                    for (var i = 0; i < n; i++) {
+                        var a = region[i], b2 = region[(i + 1) % n];
+                        var L = Math.hypot(b2.x - a.x, b2.y - a.y);
+                        if (L > bestL) { bestL = L; bestI = i; }
+                    }
+                    pool.push(bestI);
+                }
+                var ei = pool[R.random_int(0, pool.length - 1)];
+                var a0 = region[ei], b0 = region[(ei + 1) % n];
+                var t = 0.28 + R.random_dec() * 0.44;
+                var hub = {x: a0.x + (b0.x - a0.x) * t, y: a0.y + (b0.y - a0.y) * t};
+                if (R.random_int(0, 9) < trimOdds) {
+                    var nrm = inwardNormal(region, ei);
+                    if (nrm.x || nrm.y) region = trimToward(region, hub, nrm.x, nrm.y, 0.55, 1.0);
+                }
+                var aA = Math.atan2(a0.y - hub.y, a0.x - hub.x);
+                var aB = Math.atan2(b0.y - hub.y, b0.x - hub.x);
+                var sw = interiorSweep(hub, aB, aA, region);
+                return {region: region, hub: hub, sweepStart: sw.start, sweepEnd: sw.end, closed: false};
+            }
+
+            var regions = count === 1 ? [full] : splitRegions(full, count);
+
+            for (var i = 0; i < regions.length; i++) {
+                if (style === 'Orb')    { webs.push(orbWeb(regions[i])); continue; }
+                if (style === 'Corner') { webs.push(cornerWeb(regions[i])); continue; }
+                if (style === 'Edge')   { webs.push(edgeWeb(regions[i])); continue; }
+                // Natural: a mix. A lone web is usually a full orb; once the
+                // frame is shared, more of them hang off a corner or an edge.
+                var roll = R.random_int(0, 9);
+                if (regions.length === 1) webs.push(roll < 7 ? orbWeb(regions[i]) : (roll < 9 ? cornerWeb(regions[i]) : edgeWeb(regions[i])));
+                else if (roll < 4)        webs.push(cornerWeb(regions[i]));
+                else if (roll < 7)        webs.push(edgeWeb(regions[i]));
+                else                      webs.push(orbWeb(regions[i]));
+            }
+            return webs;
+        }
+        // Complexity is purely "how many webs share the frame" — 1 or 2 reads
+        // as a single web on its own, 10 crowds the frame with half a dozen.
+        var complexityParam = qParam('cx') !== null ? parseInt(qParam('cx')) : $fx.getParam('complexity');
+        var webCount = Math.max(1, Math.min(6, Math.ceil(complexityParam / 2)));
+
+        var webs = buildWebs(styleParam, webCount);
+        console.log('Style: ' + styleParam + ' / complexity: ' + complexityParam + ' / webs: ' + webs.length);
+
+        // Ring / radial counts per web: scaled by the density knob, then shrunk
+        // for the smaller pockets so their cells stay big enough to cut.
+        var webPlan = [];
+        var projected = 0;
+        for (var wi = 0; wi < webs.length; wi++) {
+            var regionScale = Math.sqrt(polygonArea(webs[wi].region) / (drawareawide * drawareahigh));
+            var densityScale = 0.5 + 0.5 * regionScale;
+            var plan = {
+                rings: Math.max(3, Math.round((densityParam + 1) * densityScale)),
+                rad: webs[wi].closed
+                    ? Math.max(9, Math.round(densityParam * 2.1 * densityScale))
+                    : Math.max(7, Math.round(densityParam * 1.35 * densityScale)) + 1
+            };
+            webPlan.push(plan);
+            projected += plan.rings * plan.rad;
+        }
+        // Every cell costs one boolean subtract per layer it cuts through, so
+        // keep the total in the same range the triangulation this was forked
+        // from produced — a frame full of webs thins each one out rather than
+        // multiplying the render time by the web count.
+        var cellBudget = 460;
+        if (projected > cellBudget) {
+            var shrink = Math.sqrt(cellBudget / projected);
+            for (var wi = 0; wi < webPlan.length; wi++) {
+                webPlan[wi].rings = Math.max(3, Math.round(webPlan[wi].rings * shrink));
+                webPlan[wi].rad = Math.max(webs[wi].closed ? 8 : 6, Math.round(webPlan[wi].rad * shrink));
+            }
+            console.log('Thinned webs to fit the cell budget (projected ' + projected + ')');
+        }
 
         var cells = [];
 
-        for (var ri = 0; ri < regions.length; ri++) {
-            var region = regions[ri].poly;
-            var lockVerts = regions[ri].lockVerts;
-            var lockedScale = regions[ri].lockedScale || 0;
+        for (var wi = 0; wi < webs.length; wi++) {
+            var web = webs[wi];
+            var hub = web.hub;
+            var region = web.region;
+            var closedWeb = web.closed;
+            var nRings = webPlan[wi].rings;
+            var nRad = webPlan[wi].rad;
 
-            // Two inset polygons:
-            //   - effRegion bounds interior site placement (so the outermost
-            //     sites are always the hull anchors, regardless of density).
-            //   - anchors live between region and effRegion, at jittered insets,
-            //     so the hull outline stays organic instead of rectilinear.
-            // Both scale with the region's short dimension so thin towers
-            // don't collapse; floor at minOffset*4.
-            var rOuter = polygonBBox(region);
-            var rShort = Math.min(rOuter.maxX - rOuter.minX, rOuter.maxY - rOuter.minY);
-            var organicInset = Math.max(minOffset * 4, rShort * 0.1);
-            // Interior clip is inset further than anchors' average, so anchors
-            // stay on the hull even when interior sites spread out.
-            var effRegion = effectiveRegionFor(region, lockVerts, organicInset * 1.4, lockedScale);
-            var rbbox = polygonBBox(effRegion);
-
-            // Region's share of the global site budget, proportional to area.
-            var interiorTarget = Math.max(4, Math.round(numSites * regionAreas[ri] / totalRegionArea));
-
-            // Hull anchors — jittered positions + jittered insets give an
-            // irregular convex hull at ~consistent size across densities.
-            var sites = generateHullAnchors(region, lockVerts, organicInset, 2, lockedScale);
-
-            // Rejection-sample interior sites inside the inset region.
-            var attempts = 0;
-            var maxAttempts = interiorTarget * 50 + 100;
-            var lockedCount = sites.length;
-            while (sites.length - lockedCount < interiorTarget && attempts < maxAttempts) {
-                var sx = rbbox.minX + R.random_dec() * (rbbox.maxX - rbbox.minX);
-                var sy = rbbox.minY + R.random_dec() * (rbbox.maxY - rbbox.minY);
-                if (pointInConvexPolygon({x: sx, y: sy}, effRegion)) {
-                    sites.push({x: sx, y: sy});
+            // ---- radial threads: evenly spaced, then knocked out of true ----
+            // Even at variation=1 there is a baseline wobble; real webs never
+            // divide the circle cleanly.
+            var angleJitter = 0.16 + 0.45 * variationT;
+            var angles = new Array(nRad);
+            if (closedWeb) {
+                var phase = R.random_dec() * Math.PI * 2;
+                var slot = Math.PI * 2 / nRad;
+                for (var k = 0; k < nRad; k++) {
+                    // Jitter stays under half a slot so radials can never cross.
+                    angles[k] = phase + k * slot + (R.random_dec() - 0.5) * slot * angleJitter;
                 }
-                attempts++;
+            } else {
+                var sweep = web.sweepEnd - web.sweepStart;
+                var slotO = sweep / (nRad - 1);
+                for (var k = 0; k < nRad; k++) {
+                    var jit = (k === 0 || k === nRad - 1) ? 0 : (R.random_dec() - 0.5) * slotO * angleJitter;
+                    angles[k] = web.sweepStart + k * slotO + jit;
+                }
+                // Nudge the outer radials just off the frame edge so the ray
+                // cast doesn't run parallel along it.
+                angles[0] += 0.004;
+                angles[nRad-1] -= 0.004;
             }
-            if (sites.length < 3) continue;
 
-            // Lloyd's relaxation on interior sites only — anchors stay pinned.
-            for (var iter = 0; iter < relaxIters; iter++) {
-                var relaxed = [];
-                for (var i = 0; i < sites.length; i++) {
-                    if (sites[i].locked) { relaxed.push(sites[i]); continue; }
-                    var vc = computeVoronoiCell(i, sites, effRegion);
-                    if (!vc) { relaxed.push(sites[i]); continue; }
-                    var cc = polygonCentroid(vc);
-                    if (!cc) { relaxed.push(sites[i]); continue; }
-                    relaxed.push({
-                        x: sites[i].x + (cc.x - sites[i].x) * blend,
-                        y: sites[i].y + (cc.y - sites[i].y) * blend
+            // How far each radial can run before it hits the frame.
+            var reach = new Array(nRad);
+            var rMin = Infinity;
+            for (var k = 0; k < nRad; k++) {
+                reach[k] = rayReachInPolygon(hub, angles[k], region);
+                if (reach[k] < rMin) rMin = reach[k];
+            }
+            if (!(rMin > 0)) continue;
+
+            // ---- spiral rings ----
+            // Rings 0..nRings-1 are the round body of the web: a spider walks a
+            // circle, it doesn't trace the frame. Ring nRings is the frame
+            // itself, so the band between the last spiral and the frame is
+            // where the long anchor threads live.
+            //
+            // ringT[0] is the free zone left solid around the hub; the exponent
+            // packs the spiral tight near the hub and opens it up outward, the
+            // way a real capture spiral runs.
+            var hubFrac = closedWeb ? 0.07 + R.random_dec() * 0.05 : 0.05 + R.random_dec() * 0.04;
+            var spacingPow = 1.12 + R.random_dec() * 0.38;
+            var ringT = new Array(nRings + 1);
+            for (var j = 0; j < nRings; j++) {
+                var u = j / (nRings - 1);
+                ringT[j] = hubFrac + (1 - hubFrac) * Math.pow(u, spacingPow);
+            }
+            ringT[nRings - 1] = 1; // outermost spiral
+            ringT[nRings] = 1;     // the frame
+            var ringStep = 1 / nRings;
+
+            // How big the round body gets. Sized off a low percentile of the
+            // radial reaches, so the body fills the pocket without being
+            // dragged out of round by the one long ray into a far corner.
+            var sortedReach = reach.slice().sort(function(a, b) { return a - b; });
+            var rBody = sortedReach[Math.floor(sortedReach.length * 0.45)] * (0.78 + R.random_dec() * 0.16);
+
+            // Per-vertex radius wobble, plus a per-radial phase offset so the
+            // spiral is nowhere near concentric. Both fade to zero on the
+            // outermost ring, which has to stay anchored on the frame.
+            var radiusJitter = 0.30 + 0.45 * variationT;
+            var radialPhase = new Array(nRad);
+            for (var k = 0; k < nRad; k++) radialPhase[k] = (R.random_dec() - 0.5);
+            var tJit = new Array(nRad);
+            for (var k = 0; k < nRad; k++) {
+                tJit[k] = new Array(nRings + 1);
+                for (var j = 0; j <= nRings; j++) {
+                    // Scale the wobble by the gap to the neighbouring rings, not
+                    // by an average — near the hub the rings are packed tight,
+                    // and a global wobble would shove them straight through
+                    // each other.
+                    var jLo = Math.max(0, j - 1), jHi = Math.min(nRings - 1, j + 1);
+                    var localStep = (ringT[jHi] - ringT[jLo]) / (jHi - jLo || 1);
+                    tJit[k][j] = (radialPhase[k] + (R.random_dec() - 0.5)) * localStep * radiusJitter;
+                }
+            }
+
+            // Sag of each spiral segment between radial k and k+1, at ring j.
+            // This is the scallop that makes a web read as a web — it is a
+            // pronounced concave droop, not a subtle one.
+            var sagBase = 0.13 + 0.10 * variationT;
+            var sagAmt = new Array(nRad);
+            for (var k = 0; k < nRad; k++) {
+                sagAmt[k] = new Array(nRings + 1);
+                for (var j = 0; j <= nRings; j++) {
+                    // Outermost ring rides the frame — no sag there.
+                    sagAmt[k][j] = (j === nRings) ? 0 : sagBase * (0.6 + R.random_dec() * 0.8);
+                }
+            }
+
+            function ringRadius(k, j) {
+                if (j === nRings) return reach[k]; // anchored on the frame
+                var t = ringT[j] + tJit[k][j];
+                if (t < hubFrac * 0.4) t = hubFrac * 0.4;
+                // Where the pocket pinches in, the body is squeezed to fit
+                // rather than clipped — same as a web strung in a tight gap.
+                var rk = Math.min(rBody, reach[k] * 0.88);
+                var r = rk * t;
+                var cap = reach[k] * 0.93;
+                return r > cap ? cap : r;
+            }
+
+            // Forward polyline of the spiral thread spanning radial k -> k+1 at
+            // ring j. Faces on both sides of a thread call this with the same
+            // (k, j), so the shared edge is vertex-for-vertex identical and the
+            // silk left standing between the two cuts has an even width.
+            var bandCache = {};
+            function ringBand(k, j) {
+                var key = k + '_' + j;
+                if (bandCache[key]) return bandCache[key];
+                var kB = (k + 1) % nRad;
+                var aA = angles[k], aB = angles[kB];
+                var da = aB - aA;
+                if (closedWeb) { while (da <= 1e-9) da += Math.PI * 2; }
+                var rA = ringRadius(k, j), rB = ringRadius(kB, j);
+                // A thread sags in proportion to how far it has to span, not to
+                // how far out it is — otherwise a web with many radials turns
+                // into a ring of spikes.
+                var s = sagAmt[k][j] * (Math.abs(da) / 0.52);
+                if (s > 0.34) s = 0.34;
+                var samples = (j === nRings) ? 8 : 6;
+                var pts = [];
+                for (var m = 0; m <= samples; m++) {
+                    var u = m / samples;
+                    var a = aA + da * u;
+                    var r = (rA + (rB - rA) * u) * (1 - s * Math.sin(Math.PI * u));
+                    // Polar interpolation can bulge past a corner — clamp every
+                    // sample to the region so nothing escapes the frame.
+                    var maxr = rayReachInPolygon(hub, a, region);
+                    if (r > maxr) r = maxr;
+                    pts.push({x: hub.x + Math.cos(a) * r, y: hub.y + Math.sin(a) * r});
+                }
+                bandCache[key] = pts;
+                return pts;
+            }
+
+            // ---- faces ----
+            // Walk each ring band, emitting one cell per radial slot. Now and
+            // then a cell swallows two slots: that drops the radial thread
+            // between them for one band, which is what gives a web its
+            // half-finished, mended look. In the outermost band it happens a
+            // lot on purpose — only a few anchor threads should carry on out to
+            // the frame, the rest stop at the last spiral.
+            var mergeChance = 0.06 + 0.18 * variationT;
+            var slots = closedWeb ? nRad : nRad - 1;
+            // Past the last spiral the spider runs only a few long anchor lines
+            // out to the frame, so the outer band is cut as a handful of big
+            // cells rather than subdivided like the web body.
+            var anchorCount = closedWeb ? R.random_int(4, 7) : R.random_int(2, 4);
+            var anchorSpan = Math.max(1, Math.round(slots / anchorCount));
+            for (var j = 0; j < nRings; j++) {
+                var outerBand = (j === nRings - 1);
+                var k = 0;
+                while (k < slots) {
+                    var span = 1;
+                    if (outerBand) {
+                        span = Math.max(1, anchorSpan + R.random_int(-1, 1));
+                    } else if (R.random_dec() < mergeChance) span = 2;
+                    if (span > slots - k) span = slots - k;
+
+                    var inner = [];
+                    var outer = [];
+                    for (var sp = 0; sp < span; sp++) {
+                        inner = inner.concat(ringBand((k + sp) % nRad, j));
+                        outer = outer.concat(ringBand((k + sp) % nRad, j + 1));
+                    }
+                    // inner runs k -> k+span; come back along the outer ring.
+                    var poly = dedupePolygon(inner.concat(outer.slice().reverse()));
+                    k += span;
+                    if (poly.length < 3) continue;
+                    poly = ensurePositiveWinding(poly);
+
+                    var area = polygonArea(poly);
+                    if (area < 4) continue;
+                    var perim = 0;
+                    for (var pi2 = 0; pi2 < poly.length; pi2++) {
+                        var pa = poly[pi2], pb = poly[(pi2+1) % poly.length];
+                        perim += Math.hypot(pb.x - pa.x, pb.y - pa.y);
+                    }
+                    // Inradius via 2*area/perimeter — the scale the layer loop
+                    // uses to decide how far each cell can taper inward.
+                    var inradius = Math.max(1, perim > 1e-6 ? 2 * area / perim : 1);
+
+                    var centroid = polygonCentroid(poly);
+                    if (!centroid) continue;
+
+                    // Depth: Perlin for organic mottling, blended with the ring
+                    // index so cells at a similar radius terrace together and
+                    // the web reads as a funnel down toward the hub.
+                    var depthNoise = noise.get(centroid.x * prange * 0.6, centroid.y * prange * 0.6);
+                    if (depthNoise < 0) depthNoise = 0;
+                    if (depthNoise > 1) depthNoise = 1;
+                    var ringFrac = (j + 0.5) / nRings;
+                    depthNoise = depthNoise * 0.65 + (1 - ringFrac) * 0.35;
+
+                    var depth = minDepth + Math.floor(depthNoise * (maxDepth - minDepth + 1));
+                    if (depth > fullMaxDepth) depth = fullMaxDepth;
+                    if (depth < 1) depth = 1;
+
+                    var endLayer = topWebLayer - (depth - 1);
+                    if (endLayer < 1) endLayer = 1;
+
+                    cells.push({
+                        polygon: poly,
+                        inradius: inradius,
+                        endLayer: endLayer
                     });
                 }
-                sites = relaxed;
-            }
-
-            var triangles = delaunayTriangulate(sites);
-
-            for (var ti = 0; ti < triangles.length; ti++) {
-                var tri = triangles[ti];
-                var p1 = sites[tri[0]], p2 = sites[tri[1]], p3 = sites[tri[2]];
-
-                var signedArea = (p2.x - p1.x) * (p3.y - p1.y) - (p3.x - p1.x) * (p2.y - p1.y);
-                var triPoly = signedArea >= 0 ? [p1, p2, p3] : [p1, p3, p2];
-
-                // Reject triangles whose centroid falls outside the region — can
-                // happen along a non-axis-aligned region edge if the convex hull
-                // of sites overshoots. Then clip to the region for safety.
-                var centroidX0 = (triPoly[0].x + triPoly[1].x + triPoly[2].x) / 3;
-                var centroidY0 = (triPoly[0].y + triPoly[1].y + triPoly[2].y) / 3;
-                if (!pointInConvexPolygon({x: centroidX0, y: centroidY0}, region)) continue;
-
-                var polygon = clipPolygonToConvex(triPoly, region);
-                if (!polygon || polygon.length < 3) continue;
-
-                // Inradius via 2*area/perimeter (exact for triangles, reasonable
-                // scale for any clipped convex polygon).
-                var area = polygonArea(polygon);
-                var perim = 0;
-                for (var pi2 = 0; pi2 < polygon.length; pi2++) {
-                    var pa = polygon[pi2], pb = polygon[(pi2+1) % polygon.length];
-                    perim += Math.hypot(pb.x - pa.x, pb.y - pa.y);
-                }
-                var inradius = Math.max(1, perim > 1e-6 ? 2 * area / perim : 1);
-
-                // Per-cell depth from spatially coherent Perlin noise.
-                var centroid = polygonCentroid(polygon) || {x: centroidX0, y: centroidY0};
-                var depthNoise = noise.get(centroid.x * prange * 0.6, centroid.y * prange * 0.6);
-                if (depthNoise < 0) depthNoise = 0;
-                if (depthNoise > 1) depthNoise = 1;
-                var depth = minDepth + Math.floor(depthNoise * (maxDepth - minDepth + 1));
-                if (depth > fullMaxDepth) depth = fullMaxDepth;
-                if (depth < 1) depth = 1;
-
-                var endLayer = firstVoronoiLayer - (depth - 1);
-                if (endLayer < 1) endLayer = 1;
-
-                cells.push({
-                    polygon: polygon,
-                    inradius: inradius,
-                    endLayer: endLayer
-                });
             }
         }
-        console.log('Delaunay triangles: ' + cells.length);
+        console.log('Web cells: ' + cells.length);
 
 
 
@@ -946,9 +1043,9 @@ for (z = 0; z < stacks; z++) {
         var cell = cells[i];
         if (z < cell.endLayer) continue; // this cell terminates above z — keep solid here (shows color)
 
-        // Shrink ratio: 0 on the top triangulation layer, 1 on the cell's deepest cut layer.
-        var distFromTop = firstVoronoiLayer - z;
-        var depthSpan = firstVoronoiLayer - cell.endLayer;
+        // Shrink ratio: 0 on the top web layer, 1 on the cell's deepest cut layer.
+        var distFromTop = topWebLayer - z;
+        var depthSpan = topWebLayer - cell.endLayer;
         var shrinkRatio = depthSpan > 0 ? (distFromTop / depthSpan) : 0;
 
         // Scale top-layer gap down for small cells so every cell still gets cut.
@@ -997,6 +1094,9 @@ for (z = 0; z < stacks; z++) {
     features.Height = ~~(high/100/ratio);
     features.Depth = stacks*0.0625;
     features.Layers = stacks;
+    features.Style = styleParam;
+    features.Webs = webs.length;
+    features.Complexity = complexityParam;
     for (l=stacks;l>0;l--){
     var key = "layer: "+(stacks-l+1)
     features[key] = colors[l-1].Name
