@@ -112,7 +112,7 @@ function qParam(key) {
 var qdensity = R.random_int(1,10);
 if(qParam('d') !== null){qdensity = parseInt(qParam('d'))}; //density
 qdensity = qdensity+3;
-var qcomplexity = R.random_int(1,10);
+var qcomplexity = R.random_choice([1,1,2,2,2,3,3,4,4,5,6,7,8,9,10]);
 if(qParam('cx') !== null){qcomplexity = parseInt(qParam('cx'))}; //complexity (how many webs)
 var qvariation = 10;
 if(qParam('v') !== null){qvariation = parseInt(qParam('v'))}; //cell size variation
@@ -742,7 +742,10 @@ var px=0;var py=0;var pz=0;var prange=.1;
         // Complexity is purely "how many webs share the frame" — 1 or 2 reads
         // as a single web on its own, 10 crowds the frame with half a dozen.
         var complexityParam = qParam('cx') !== null ? parseInt(qParam('cx')) : $fx.getParam('complexity');
-        var webCount = Math.max(1, Math.min(6, Math.ceil(complexityParam / 2)));
+        var webCount = complexityParam <= 3 ? 1
+                     : complexityParam <= 5 ? 2
+                     : complexityParam <= 7 ? 3
+                     : Math.min(6, complexityParam - 4);
 
         var webs = buildWebs(styleParam, webCount);
         console.log('Style: ' + styleParam + ' / complexity: ' + complexityParam + ' / webs: ' + webs.length);
@@ -754,11 +757,13 @@ var px=0;var py=0;var pz=0;var prange=.1;
         for (var wi = 0; wi < webs.length; wi++) {
             var regionScale = Math.sqrt(polygonArea(webs[wi].region) / (drawareawide * drawareahigh));
             var densityScale = 0.5 + 0.5 * regionScale;
+            // Floors matter more than the slope here: a web with only four
+            // rings reads as a coarse fan, not as silk.
             var plan = {
-                rings: Math.max(3, Math.round((densityParam + 1) * densityScale)),
+                rings: Math.max(5, Math.round((densityParam + 3) * densityScale)),
                 rad: webs[wi].closed
-                    ? Math.max(9, Math.round(densityParam * 2.1 * densityScale))
-                    : Math.max(7, Math.round(densityParam * 1.35 * densityScale)) + 1
+                    ? Math.max(11, Math.round((densityParam + 3) * 2.0 * densityScale))
+                    : Math.max(8, Math.round((densityParam + 3) * 1.3 * densityScale))
             };
             webPlan.push(plan);
             projected += plan.rings * plan.rad;
@@ -831,7 +836,7 @@ var px=0;var py=0;var pz=0;var prange=.1;
             // packs the spiral tight near the hub and opens it up outward, the
             // way a real capture spiral runs.
             var hubFrac = closedWeb ? 0.07 + R.random_dec() * 0.05 : 0.05 + R.random_dec() * 0.04;
-            var spacingPow = 1.12 + R.random_dec() * 0.38;
+            var spacingPow = 0.95 + R.random_dec() * 0.25;
             var ringT = new Array(nRings + 1);
             for (var j = 0; j < nRings; j++) {
                 var u = j / (nRings - 1);
@@ -845,7 +850,7 @@ var px=0;var py=0;var pz=0;var prange=.1;
             // radial reaches, so the body fills the pocket without being
             // dragged out of round by the one long ray into a far corner.
             var sortedReach = reach.slice().sort(function(a, b) { return a - b; });
-            var rBody = sortedReach[Math.floor(sortedReach.length * 0.45)] * (0.78 + R.random_dec() * 0.16);
+            var rBody = sortedReach[Math.floor(sortedReach.length * 0.8)] * (0.9 + R.random_dec() * 0.1);
 
             // Per-vertex radius wobble, plus a per-radial phase offset so the
             // spiral is nowhere near concentric. Both fade to zero on the
@@ -863,6 +868,7 @@ var px=0;var py=0;var pz=0;var prange=.1;
                     // each other.
                     var jLo = Math.max(0, j - 1), jHi = Math.min(nRings - 1, j + 1);
                     var localStep = (ringT[jHi] - ringT[jLo]) / (jHi - jLo || 1);
+                    if (localStep > ringT[j] * 0.5) localStep = ringT[j] * 0.5;
                     tJit[k][j] = (radialPhase[k] + (R.random_dec() - 0.5)) * localStep * radiusJitter;
                 }
             }
@@ -938,7 +944,7 @@ var px=0;var py=0;var pz=0;var prange=.1;
             // Past the last spiral the spider runs only a few long anchor lines
             // out to the frame, so the outer band is cut as a handful of big
             // cells rather than subdivided like the web body.
-            var anchorCount = closedWeb ? R.random_int(4, 7) : R.random_int(2, 4);
+            var anchorCount = closedWeb ? R.random_int(6, 10) : R.random_int(4, 7);
             var anchorSpan = Math.max(1, Math.round(slots / anchorCount));
             for (var j = 0; j < nRings; j++) {
                 var outerBand = (j === nRings - 1);
@@ -1000,7 +1006,15 @@ var px=0;var py=0;var pz=0;var prange=.1;
                 }
             }
         }
-        console.log('Web cells: ' + cells.length);
+        // Median cell size: the layer loop caps every cell's taper against this,
+        // so one outsized cell can't tunnel into a terraced crater that swallows
+        // the web around it.
+        var medianInradius = 1;
+        if (cells.length) {
+            var radii = cells.map(function(c) { return c.inradius; }).sort(function(a, b) { return a - b; });
+            medianInradius = radii[Math.floor(radii.length / 2)] || 1;
+        }
+        console.log('Web cells: ' + cells.length + ' / median inradius ' + medianInradius.toFixed(1));
 
 
 
@@ -1050,7 +1064,9 @@ for (z = 0; z < stacks; z++) {
 
         // Scale top-layer gap down for small cells so every cell still gets cut.
         var topInset = Math.min(cellGap, cell.inradius * 0.4);
-        var maxInset = cell.inradius * 0.9;
+        // Taper toward a point for ordinary cells, but cap the total draw-in so
+        // an oversized cell bevels instead of cratering.
+        var maxInset = Math.min(cell.inradius * 0.9, topInset + medianInradius * 1.2);
         if (maxInset <= topInset) { maxInset = topInset + 0.5; }
 
         // Baseline gap between cells on the top layer, then grow inward as z goes down.
