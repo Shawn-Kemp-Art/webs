@@ -369,6 +369,23 @@ var px=0;var py=0;var pz=0;var prange=.1;
         }
         function polygonArea(poly) { return Math.abs(polygonSignedArea(poly)); }
 
+        function polygonSelfIntersects(poly) {
+            var n = poly.length;
+            if (n < 4) return false;
+            function side(p, q, r) {
+                var v = (q.x - p.x) * (r.y - p.y) - (q.y - p.y) * (r.x - p.x);
+                return v > 1e-9 ? 1 : (v < -1e-9 ? -1 : 0);
+            }
+            for (var i = 0; i < n; i++) {
+                for (var j = i + 2; j < n; j++) {
+                    if (i === 0 && j === n - 1) continue; // shares a vertex
+                    var a = poly[i], b = poly[(i+1) % n], c = poly[j], d = poly[(j+1) % n];
+                    if (side(a,b,c) !== side(a,b,d) && side(c,d,a) !== side(c,d,b)) return true;
+                }
+            }
+            return false;
+        }
+
         function polygonCentroid(poly) {
             var cx = 0, cy = 0, area = 0;
             for (var j = 0; j < poly.length; j++) {
@@ -840,10 +857,27 @@ var px=0;var py=0;var pz=0;var prange=.1;
                 }
             }
 
+            // Resolve each radial's ring positions once, forcing them to
+            // increase outward. Wobble alone could push ring j past ring j+1,
+            // which flips that quad inside out and cuts a stray slash.
+            var tVal = new Array(nRad);
+            for (var k = 0; k < nRad; k++) {
+                tVal[k] = new Array(nRings);
+                var prevT = -Infinity;
+                for (var j = 0; j < nRings; j++) {
+                    var t0 = ringT[j] + tJit[k][j];
+                    var minGap = j > 0 ? (ringT[j] - ringT[j-1]) * 0.35 : 0;
+                    if (t0 < prevT + minGap) t0 = prevT + minGap;
+                    if (t0 < hubFrac * 0.4) t0 = hubFrac * 0.4;
+                    if (t0 > 1.08) t0 = 1.08;
+                    tVal[k][j] = t0;
+                    prevT = t0;
+                }
+            }
+
             function ringRadius(k, j) {
                 if (j === nRings) return reach[k]; // anchored on the frame
-                var t = ringT[j] + tJit[k][j];
-                if (t < hubFrac * 0.4) t = hubFrac * 0.4;
+                var t = tVal[k][j];
                 // Where the pocket pinches in, the body is squeezed to fit
                 // rather than clipped — same as a web strung in a tight gap.
                 var rk = Math.min(rBody, reach[k] * 0.88);
@@ -882,16 +916,32 @@ var px=0;var py=0;var pz=0;var prange=.1;
                 // into a ring of spikes.
                 var s = sagAmt[k][j] * (Math.abs(da) / 0.52);
                 if (s > 0.34) s = 0.34;
+                if (j > 0 && j < nRings) {
+                    // Droop is a fraction of radius; the ring below is only a
+                    // ring-gap away. Without this the two cross.
+                    var gapA = rA - ringRadius(k, j - 1), gapB = rB - ringRadius(kB, j - 1);
+                    var minGap = Math.min(gapA, gapB);
+                    var maxS = minGap > 0 ? 0.5 * minGap / Math.max(rA, rB, 1e-6) : 0;
+                    if (s > maxS) s = maxS;
+                }
                 var samples = (j === nRings) ? 8 : 6;
                 var pts = [];
                 for (var m = 0; m <= samples; m++) {
                     var u = m / samples;
                     var a = aA + da * u;
-                    var r = (rA + (rB - rA) * u) * (1 - s * Math.sin(Math.PI * u));
-                    // Polar interpolation can bulge past a corner — clamp every
-                    // sample to the region so nothing escapes the frame.
                     var maxr = rayReachInPolygon(hub, a, region);
-                    if (r > maxr) r = maxr;
+                    var r;
+                    if (j === nRings) {
+                        // The outermost ring IS the frame. Take the boundary
+                        // distance directly: interpolating between two radials
+                        // cuts the chord of the corner they straddle, which
+                        // leaves a solid chamfer and makes the mat look like it
+                        // grew into the opening.
+                        r = maxr;
+                    } else {
+                        r = (rA + (rB - rA) * u) * (1 - s * Math.sin(Math.PI * u));
+                        if (r > maxr) r = maxr; // never escape the frame
+                    }
                     pts.push({a: a, x: hub.x + Math.cos(a) * r, y: hub.y + Math.sin(a) * r});
                 }
                 if (j === nRings) {
@@ -947,6 +997,7 @@ var px=0;var py=0;var pz=0;var prange=.1;
 
                     var area = polygonArea(poly);
                     if (area < 4) continue;
+                    if (polygonSelfIntersects(poly)) continue;
                     var perim = 0;
                     for (var pi2 = 0; pi2 < poly.length; pi2++) {
                         var pa = poly[pi2], pb = poly[(pi2+1) % poly.length];
@@ -955,6 +1006,9 @@ var px=0;var py=0;var pz=0;var prange=.1;
                     // Inradius via 2*area/perimeter — the scale the layer loop
                     // uses to decide how far each cell can taper inward.
                     var inradius = Math.max(1, perim > 1e-6 ? 2 * area / perim : 1);
+                    // Compactness: 1 is a circle, near 0 is a hair. A sliver
+                    // cuts as a stray slash across the silk, so drop it.
+                    if (perim > 1e-6 && 4 * Math.PI * area / (perim * perim) < 0.04) continue;
 
                     var centroid = polygonCentroid(poly);
                     if (!centroid) continue;
