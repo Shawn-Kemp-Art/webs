@@ -621,18 +621,33 @@ var px=0;var py=0;var pz=0;var prange=.1;
             // Orb weavers hang above centre — bias the hub up and jitter it
             // across, so the radials are never the same length twice.
             function orbWeb(region) {
+                // Sit the hub well inside the pocket: start at the centroid and
+                // wander at most part-way to the nearest wall. Placing it by
+                // bounding-box fractions can drop it a few units from a slanted
+                // edge, which squeezes the radial reaches into a 15:1 spread and
+                // skews the quads badly enough to turn them inside out.
                 var b = polyBounds(region);
-                var hub, tries = 0;
-                do {
-                    hub = {
-                        x: b.minX + b.w * (0.5 + (R.random_dec() - 0.5) * 0.42),
-                        y: b.minY + b.h * (0.44 + (R.random_dec() - 0.5) * 0.46)
-                    };
-                    tries++;
-                } while (!pointInPolygon(hub, region) && tries < 20);
-                if (!pointInPolygon(hub, region)) {
-                    hub = polygonCentroid(region) || {x: (b.minX+b.maxX)/2, y: (b.minY+b.maxY)/2};
+                var c = polygonCentroid(region) || {x: (b.minX+b.maxX)/2, y: (b.minY+b.maxY)/2};
+                var clearance = Infinity;
+                for (var i = 0; i < region.length; i++) {
+                    var ea = region[i], eb = region[(i+1) % region.length];
+                    var ex = eb.x - ea.x, ey = eb.y - ea.y;
+                    var L = Math.hypot(ex, ey);
+                    if (L < 1e-6) continue;
+                    var d = Math.abs((c.x - ea.x) * ey - (c.y - ea.y) * ex) / L;
+                    if (d < clearance) clearance = d;
                 }
+                if (!isFinite(clearance)) clearance = 0;
+                // Orb weavers hang above centre — wander freely, lean upward.
+                var offAng = R.random_dec() * Math.PI * 2;
+                var offMag = clearance * (0.15 + 0.3 * R.random_dec());
+                var hub = {
+                    x: c.x + Math.cos(offAng) * offMag,
+                    y: c.y + Math.sin(offAng) * offMag - clearance * 0.1
+                };
+                // Total displacement stays under 0.55 of the clearance, so the
+                // hub is always comfortably inside; fall back anyway.
+                if (!pointInPolygon(hub, region)) hub = c;
                 return {region: region, hub: hub, closed: true};
             }
 
