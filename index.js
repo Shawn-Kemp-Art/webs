@@ -600,9 +600,6 @@ var px=0;var py=0;var pz=0;var prange=.1;
         function buildWebs(style, count) {
             var full = rect(bbox.minX, bbox.minY, bbox.maxX, bbox.maxY);
             var webs = [];
-            // A lone spider often bothers with only part of the frame; once
-            // several are sharing it they each fill their pocket.
-            var trimOdds = count === 1 ? 7 : (count <= 3 ? 5 : 2);
 
             // Orb weavers hang above centre — bias the hub up and jitter it
             // across, so the radials are never the same length twice.
@@ -620,36 +617,6 @@ var px=0;var py=0;var pz=0;var prange=.1;
                     hub = polygonCentroid(region) || {x: (b.minX+b.maxX)/2, y: (b.minY+b.maxY)/2};
                 }
                 return {region: region, hub: hub, closed: true};
-            }
-
-            // Trim a pocket back to just the part near the hub, so an
-            // anchored web spans a chord of the frame instead of always
-            // reaching the far side. This is what leaves bare frame beside a
-            // corner web — the spider only bothered with its own corner.
-            function trimToward(region, hub, nx, ny, lo, hi) {
-                var maxD = 0;
-                for (var i = 0; i < region.length; i++) {
-                    var d = (region[i].x - hub.x) * nx + (region[i].y - hub.y) * ny;
-                    if (d > maxD) maxD = d;
-                }
-                if (maxD <= 0) return region;
-                var dist = maxD * (lo + R.random_dec() * (hi - lo));
-                var trimmed = clipHalfPlane(region, hub.x + nx * dist, hub.y + ny * dist, nx, ny);
-                if (trimmed.length < 3) return region;
-                if (polygonArea(trimmed) < polygonArea(region) * 0.12) return region;
-                return trimmed;
-            }
-
-            // Inward-pointing unit normal of region edge i.
-            function inwardNormal(region, i) {
-                var a = region[i], b = region[(i + 1) % region.length];
-                var dx = b.x - a.x, dy = b.y - a.y;
-                var L = Math.hypot(dx, dy);
-                if (L < 1e-6) return {x: 0, y: 0};
-                var nx = -dy / L, ny = dx / L;
-                var mid = {x: (a.x + b.x) / 2, y: (a.y + b.y) / 2};
-                if (!pointInPolygon({x: mid.x + nx * 2, y: mid.y + ny * 2}, region)) { nx = -nx; ny = -ny; }
-                return {x: nx, y: ny};
             }
 
             // Hub pinned on a corner of the pocket, fanning across that corner's
@@ -677,15 +644,6 @@ var px=0;var py=0;var pz=0;var prange=.1;
                 var aPrev = Math.atan2(prev.y - v.y, prev.x - v.x);
                 var aNext = Math.atan2(next.y - v.y, next.x - v.x);
                 var hub = {x: v.x, y: v.y};
-                // Usually the spider only spans part of the pocket.
-                if (R.random_int(0, 9) < trimOdds) {
-                    var cen = polygonCentroid(region);
-                    if (cen) {
-                        var dx = cen.x - hub.x, dy = cen.y - hub.y;
-                        var L = Math.hypot(dx, dy);
-                        if (L > 1e-6) region = trimToward(region, hub, dx / L, dy / L, 0.55, 1.0);
-                    }
-                }
                 var sw = interiorSweep(hub, aNext, aPrev, region);
                 return {region: region, hub: hub, sweepStart: sw.start, sweepEnd: sw.end, closed: false};
             }
@@ -713,10 +671,6 @@ var px=0;var py=0;var pz=0;var prange=.1;
                 var a0 = region[ei], b0 = region[(ei + 1) % n];
                 var t = 0.28 + R.random_dec() * 0.44;
                 var hub = {x: a0.x + (b0.x - a0.x) * t, y: a0.y + (b0.y - a0.y) * t};
-                if (R.random_int(0, 9) < trimOdds) {
-                    var nrm = inwardNormal(region, ei);
-                    if (nrm.x || nrm.y) region = trimToward(region, hub, nrm.x, nrm.y, 0.55, 1.0);
-                }
                 var aA = Math.atan2(a0.y - hub.y, a0.x - hub.x);
                 var aB = Math.atan2(b0.y - hub.y, b0.x - hub.x);
                 var sw = interiorSweep(hub, aB, aA, region);
@@ -898,6 +852,18 @@ var px=0;var py=0;var pz=0;var prange=.1;
                 return r > cap ? cap : r;
             }
 
+            // Angles of the pocket's own corners, seen from the hub. The
+            // outermost ring is the frame itself, so it has to turn these
+            // corners exactly — sampling in polar alone chords across them and
+            // leaves the opening looking rounded instead of full-size.
+            var cornerAngles = [];
+            for (var ci = 0; ci < region.length; ci++) {
+                var cv = region[ci];
+                var cdx = cv.x - hub.x, cdy = cv.y - hub.y;
+                if (Math.hypot(cdx, cdy) < 1e-6) continue;
+                cornerAngles.push({a: Math.atan2(cdy, cdx), x: cv.x, y: cv.y});
+            }
+
             // Forward polyline of the spiral thread spanning radial k -> k+1 at
             // ring j. Faces on both sides of a thread call this with the same
             // (k, j), so the shared edge is vertex-for-vertex identical and the
@@ -926,7 +892,20 @@ var px=0;var py=0;var pz=0;var prange=.1;
                     // sample to the region so nothing escapes the frame.
                     var maxr = rayReachInPolygon(hub, a, region);
                     if (r > maxr) r = maxr;
-                    pts.push({x: hub.x + Math.cos(a) * r, y: hub.y + Math.sin(a) * r});
+                    pts.push({a: a, x: hub.x + Math.cos(a) * r, y: hub.y + Math.sin(a) * r});
+                }
+                if (j === nRings) {
+                    // Splice in any frame corner this span crosses, then re-sort
+                    // by angle — the region is convex and the hub is inside it,
+                    // so its boundary is angularly monotonic about the hub.
+                    for (var ca = 0; ca < cornerAngles.length; ca++) {
+                        var av = cornerAngles[ca].a;
+                        while (av < aA - 1e-9) av += Math.PI * 2;
+                        while (av > aA + Math.PI * 2 + 1e-9) av -= Math.PI * 2;
+                        if (av > aA + 1e-6 && av < aA + da - 1e-6)
+                            pts.push({a: av, x: cornerAngles[ca].x, y: cornerAngles[ca].y});
+                    }
+                    pts.sort(function(p, q) { return p.a - q.a; });
                 }
                 bandCache[key] = pts;
                 return pts;
@@ -941,18 +920,16 @@ var px=0;var py=0;var pz=0;var prange=.1;
             // the frame, the rest stop at the last spiral.
             var mergeChance = 0.06 + 0.18 * variationT;
             var slots = closedWeb ? nRad : nRad - 1;
-            // Past the last spiral the spider runs only a few long anchor lines
-            // out to the frame, so the outer band is cut as a handful of big
-            // cells rather than subdivided like the web body.
-            var anchorCount = closedWeb ? R.random_int(6, 10) : R.random_int(4, 7);
-            var anchorSpan = Math.max(1, Math.round(slots / anchorCount));
+            // Past the last spiral, nearly every radial carries on out and ties
+            // the web to the frame. Only the odd one stops short, so the band
+            // reads as a fan of anchor lines rather than a few big voids.
             for (var j = 0; j < nRings; j++) {
                 var outerBand = (j === nRings - 1);
                 var k = 0;
                 while (k < slots) {
                     var span = 1;
                     if (outerBand) {
-                        span = Math.max(1, anchorSpan + R.random_int(-1, 1));
+                        span = R.random_choice([1, 1, 1, 1, 2, 2, 3]);
                     } else if (R.random_dec() < mergeChance) span = 2;
                     if (span > slots - k) span = slots - k;
 
