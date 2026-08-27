@@ -821,7 +821,7 @@ var px=0;var py=0;var pz=0;var prange=.1;
             // ringT[0] is the free zone left solid around the hub; the exponent
             // packs the spiral tight near the hub and opens it up outward, the
             // way a real capture spiral runs.
-            var hubFrac = closedWeb ? 0.07 + R.random_dec() * 0.05 : 0.05 + R.random_dec() * 0.04;
+            var hubFrac = closedWeb ? 0.12 + R.random_dec() * 0.08 : 0.08 + R.random_dec() * 0.05;
             var spacingPow = 0.95 + R.random_dec() * 0.25;
             var ringT = new Array(nRings + 1);
             for (var j = 0; j < nRings; j++) {
@@ -836,7 +836,10 @@ var px=0;var py=0;var pz=0;var prange=.1;
             // radial reaches, so the body fills the pocket without being
             // dragged out of round by the one long ray into a far corner.
             var sortedReach = reach.slice().sort(function(a, b) { return a - b; });
-            var rBody = sortedReach[Math.floor(sortedReach.length * 0.8)] * (0.9 + R.random_dec() * 0.1);
+            // Not every spider fills the space it is given. A smaller body
+            // still ties into the frame — just on much longer anchor threads.
+            var bodyScale = R.random_choice([1.0, 1.0, 0.92, 0.8, 0.65, 0.5]);
+            var rBody = sortedReach[Math.floor(sortedReach.length * 0.8)] * (0.9 + R.random_dec() * 0.1) * bodyScale;
 
             // Per-vertex radius wobble, plus a per-radial phase offset so the
             // spiral is nowhere near concentric. Both fade to zero on the
@@ -985,6 +988,19 @@ var px=0;var py=0;var pz=0;var prange=.1;
             // the frame, the rest stop at the last spiral.
             var mergeChance = 0.06 + 0.18 * variationT;
             var slots = closedWeb ? nRad : nRad - 1;
+            // Radials converge at the hub, so a fixed slot count makes the
+            // centre far denser than the rim. Merge slots wherever the arc
+            // between two radials falls below a few thread-widths, which keeps
+            // cell size roughly even from hub to frame.
+            var slotAng = closedWeb ? (Math.PI * 2 / nRad)
+                                    : ((web.sweepEnd - web.sweepStart) / (nRad - 1));
+            var targetArc = cellGap * 3.2;
+            function spanForBand(j) {
+                var rMid = rBody * (ringT[j] + ringT[Math.min(j + 1, nRings - 1)]) * 0.5;
+                var arc = rMid * slotAng;
+                if (!(arc > 1e-6)) return slots;
+                return Math.max(1, Math.ceil(targetArc / arc));
+            }
             // Past the last spiral, nearly every radial carries on out and ties
             // the web to the frame. Only the odd one stops short, so the band
             // reads as a fan of anchor lines rather than a few big voids.
@@ -992,10 +1008,10 @@ var px=0;var py=0;var pz=0;var prange=.1;
                 var outerBand = (j === nRings - 1);
                 var k = 0;
                 while (k < slots) {
-                    var span = 1;
+                    var span = spanForBand(j);
                     if (outerBand) {
                         span = R.random_choice([1, 1, 1, 1, 2, 2, 3]);
-                    } else if (R.random_dec() < mergeChance) span = 2;
+                    } else if (R.random_dec() < mergeChance) span += 1;
                     if (span > slots - k) span = slots - k;
 
                     var inner = [];
@@ -1111,15 +1127,22 @@ for (z = 0; z < stacks; z++) {
 
         // Scale top-layer gap down for small cells so every cell still gets cut.
         var topInset = Math.min(cellGap, cell.inradius * 0.4);
-        // Taper toward a point for ordinary cells, but cap the total draw-in so
-        // an oversized cell bevels instead of cratering.
-        var maxInset = Math.min(cell.inradius * 0.9, topInset + medianInradius * 1.2);
-        if (maxInset <= topInset) { maxInset = topInset + 0.5; }
+        // Taper inward with depth, but never far enough to seal the cell off:
+        // a cut that closes before the bottom layer leaves a plug of colour
+        // instead of going through. Cap the draw-in so an oversized cell
+        // bevels rather than craters, and always leave a real opening.
+        var minOpening = Math.max(minOffset, 1.5);
+        var maxInset = Math.min(cell.inradius - minOpening, topInset + medianInradius * 1.2);
+        if (maxInset < topInset) { maxInset = topInset; }
 
         // Baseline gap between cells on the top layer, then grow inward as z goes down.
         var inset = topInset + shrinkRatio * (maxInset - topInset) * 0.95;
 
         var insetPoly = offsetPolygonClipper(cell.polygon, -inset);
+        if ((!insetPoly || insetPoly.length < 3) && inset > topInset) {
+            // Fall back to the untapered opening so the cell still cuts through.
+            insetPoly = offsetPolygonClipper(cell.polygon, -topInset);
+        }
         if (!insetPoly || insetPoly.length < 3) continue;
 
         var segs = new Array(insetPoly.length);
